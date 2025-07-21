@@ -1,185 +1,187 @@
+#!/usr/bin/env python3
 import logging
 import os
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 import anthropic
 
-# Налаштування логування
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+# Логування
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# API ключі
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
+# Конфігурація
+TOKEN = os.environ.get('TELEGRAM_TOKEN')
+ANTHROPIC_KEY = os.environ.get('ANTHROPIC_API_KEY')
+
+if not TOKEN or not ANTHROPIC_KEY:
+    logger.error("Відсутні environment variables!")
+    exit(1)
+
+# Claude клієнт
+try:
+    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+    logger.info("Claude клієнт ініціалізовано")
+except Exception as e:
+    logger.error(f"Помилка ініціалізації Claude: {e}")
+    exit(1)
+
+# Телефон адвоката
 LAWYER_PHONE = "+380983607200"
 LAWYER_USERNAME = "Law_firm_zakhyst"
 
-# Claude клієнт
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
-# Зберігання нових користувачів
-new_users = set()
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def start(update, context):
     """Команда /start"""
+    keyboard = [[InlineKeyboardButton("📞 Адвокат", callback_data="lawyer")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     text = """🏛️ **Юридичний консультант**
 
-Вітаю! Я надаю професійні юридичні консультації на основі законодавства України.
+Вітаю! Я надаю професійні консультації з українського права.
 
-**Що я можу:**
-⚖️ Відповідати на правові питання
-📋 Посилатися на закони України
-💡 Давати практичні поради
-👨‍💼 З'єднувати з адвокатом
+Опишіть вашу ситуацію і я дам детальну відповідь з посиланнями на закони."""
+    
+    update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
-**Просто опишіть вашу ситуацію - я проаналізую і дам відповідь!**"""
-
-    keyboard = [[InlineKeyboardButton("📞 Зв'язатися з адвокатом", callback_data="lawyer")]]
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_message(update, context):
     """Обробка повідомлень"""
-    user_id = update.effective_user.id
     message = update.message.text
-    username = update.effective_user.first_name or "Користувач"
-
-    # Привітання для нових користувачів
-    if user_id not in new_users:
-        new_users.add(user_id)
-        greeting = f"👋 Вітаю, {username}! Я ваш юридичний консультант. Опишіть вашу правову ситуацію, і я надам професійну консультацію."
-        await update.message.reply_text(greeting)
-
+    user_name = update.effective_user.first_name or "Користувач"
+    
     # Відправка повідомлення про обробку
-    processing_msg = await update.message.reply_text("⚖️ Аналізую ваше питання...")
-
+    processing = update.message.reply_text("⚖️ Аналізую ваше питання...")
+    
     try:
         # Запит до Claude
         response = client.messages.create(
             model="claude-3-sonnet-20240229",
-            max_tokens=2000,
-            system="""Ви - кваліфікований юрист України. Аналізуйте кожне повідомлення:
+            max_tokens=1500,
+            system="""Ви - юрист України. Аналізуйте кожне повідомлення:
 
-1. ЯКЩО це юридичне питання або правова ситуація:
-   - Надайте детальну професійну консультацію
-   - Посилайтеся на конкретні статті законів України
-   - Структуруйте відповідь: Аналіз → Правова база → Поради
-   - Пишіть українською мовою
+ЯКЩО це юридичне питання:
+- Надайте професійну консультацію
+- Посилайтеся на статті законів України  
+- Структуруйте: Аналіз → Правова база → Поради
 
-2. ЯКЩО це НЕ юридичне питання:
-   - Відповідайте: "❌ Я консультую тільки з юридичних питань. Опишіть вашу правову ситуацію, і я допоможу з професійною консультацією."
+ЯКЩО це НЕ юридичне питання:
+- Відповідайте: "❌ Я консультую тільки з юридичних питань. Опишіть вашу правову ситуацію."
 
-Юридичні питання включають: цивільне, кримінальне, трудове, сімейне, адміністративне право, власність, договори, спадщина, суди, штрафи, порушення прав тощо.""",
+Пишіть українською мовою.""",
             messages=[{"role": "user", "content": message}]
         )
-
+        
         claude_answer = response.content[0].text
-
+        
         # Видалення повідомлення про обробку
-        await processing_msg.delete()
-
-        # Якщо Claude відповів що це не юридичне питання
+        processing.delete()
+        
+        # Перевірка чи це юридичне питання
         if "❌ Я консультую тільки з юридичних питань" in claude_answer:
-            keyboard = [[InlineKeyboardButton("📞 Зв'язатися з адвокатом", callback_data="lawyer")]]
-            await update.message.reply_text(claude_answer, reply_markup=InlineKeyboardMarkup(keyboard))
+            keyboard = [[InlineKeyboardButton("📞 Адвокат", callback_data="lawyer")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            update.message.reply_text(claude_answer, reply_markup=reply_markup)
             return
-
-        # Формування повної відповіді для юридичних питань
+        
+        # Формування відповіді для юридичних питань
         full_response = f"""{claude_answer}
 
 ---
-👨‍💼 **Потрібна персональна допомога?** 
-Наш адвокат готовий надати професійну консультацію та допомогу у вирішенні вашої ситуації."""
-
-        # Кнопки для юридичних консультацій
-        keyboard = [
-            [InlineKeyboardButton("📞 Зв'язатися з адвокатом", callback_data="lawyer")],
-            [InlineKeyboardButton("💰 Питання оплати", callback_data="payment")]
-        ]
+👨‍💼 **Потрібна персональна консультація?**
+Зверніться до нашого адвоката для детального розгляду справи."""
         
-        await update.message.reply_text(
-            full_response, 
-            reply_markup=InlineKeyboardMarkup(keyboard), 
-            parse_mode='Markdown'
-        )
-
+        keyboard = [
+            [InlineKeyboardButton("📞 Адвокат", callback_data="lawyer")],
+            [InlineKeyboardButton("💰 Оплата", callback_data="payment")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        update.message.reply_text(full_response, reply_markup=reply_markup, parse_mode='Markdown')
+        
     except Exception as e:
+        processing.delete()
         logger.error(f"Помилка: {e}")
-        await processing_msg.delete()
-        await update.message.reply_text(
-            "❌ Технічна помилка. Спробуйте пізніше або зверніться до адвоката.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📞 Адвокат", callback_data="lawyer")]])
+        
+        keyboard = [[InlineKeyboardButton("📞 Адвокат", callback_data="lawyer")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        update.message.reply_text(
+            "❌ Технічна помилка. Зверніться до адвоката.",
+            reply_markup=reply_markup
         )
 
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def button_handler(update, context):
     """Обробка кнопок"""
     query = update.callback_query
-    await query.answer()
-
+    query.answer()
+    
     if query.data == "lawyer":
-        text = f"""📞 **Зв'язок з адвокатом**
+        text = f"""📞 **Контакти адвоката**
 
 **Телефон:** {LAWYER_PHONE}
 **Telegram:** @{LAWYER_USERNAME}
 
-🕐 **Режим роботи:** Пн-Пт 9:00-18:00
+🕐 **Графік:** Пн-Пт 9:00-18:00
 ⚡ **Термінові питання:** За домовленістю
 
-💬 **При зверненні вкажіть:**
-• Суть правової ситуації
+💬 **Опишіть при зверненні:**
+• Вашу правову ситуацію
 • Терміновість питання
 • Контактні дані"""
 
         keyboard = [
-            [InlineKeyboardButton("💬 Написати @" + LAWYER_USERNAME, url=f"https://t.me/{LAWYER_USERNAME}")],
+            [InlineKeyboardButton("💬 @" + LAWYER_USERNAME, url=f"https://t.me/{LAWYER_USERNAME}")],
             [InlineKeyboardButton("🔙 Назад", callback_data="back")]
         ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        
     elif query.data == "payment":
-        text = f"""💰 **Питання оплати**
+        text = f"""💰 **Вартість послуг**
 
-Вартість юридичних послуг обговорюється індивідуально залежно від складності справи.
+Вартість залежить від складності справи.
 
-📞 **Для уточнення вартості:**
-• Телефон: {LAWYER_PHONE}
+📞 **Для уточнення:**
+• Телефон: {LAWYER_PHONE}  
 • Telegram: @{LAWYER_USERNAME}
 
-💡 **Перша консультація** може бути безкоштовною."""
+💡 **Перша консультація може бути безкоштовною.**"""
 
         keyboard = [
-            [InlineKeyboardButton("📞 Зв'язатися з адвокатом", callback_data="lawyer")],
+            [InlineKeyboardButton("📞 Зв'язатися", callback_data="lawyer")],
             [InlineKeyboardButton("🔙 Назад", callback_data="back")]
         ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        
     elif query.data == "back":
         text = """🏛️ **Юридичний консультант**
 
-Опишіть вашу правову ситуацію, і я надам професійну консультацію з посиланнями на законодавство України."""
+Опишіть вашу правову ситуацію і я надам професійну консультацію."""
 
-        keyboard = [[InlineKeyboardButton("📞 Зв'язатися з адвокатом", callback_data="lawyer")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        keyboard = [[InlineKeyboardButton("📞 Адвокат", callback_data="lawyer")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
 def main():
     """Запуск бота"""
     print("🏛️ Запуск юридичного бота...")
+    
+    # Створення updater
+    updater = Updater(token=TOKEN, use_context=True)
+    dispatcher = updater.dispatcher
+    
+    # Додавання обробників
+    dispatcher.add_handler(CommandHandler('start', start))
+    dispatcher.add_handler(CallbackQueryHandler(button_handler))
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+    
+    # Запуск
+    print("✅ Юридичний бот запущено!")
     print(f"📞 Адвокат: {LAWYER_PHONE}")
     print(f"💬 Telegram: @{LAWYER_USERNAME}")
-
-    # Створення додатка
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-
-    # Обробники
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    # Запуск
-    print("✅ Бот запущений!")
-    app.run_polling(drop_pending_updates=True)
+    
+    # Polling
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == '__main__':
     main()
